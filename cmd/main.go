@@ -39,6 +39,7 @@ import (
 
 	examplecomv1 "github/camilamacedo86/wordpress-operator/api/v1"
 	"github/camilamacedo86/wordpress-operator/internal/controller"
+	webhookexamplecomv1 "github/camilamacedo86/wordpress-operator/internal/webhook/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -208,6 +209,13 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Wordpress")
 		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err = webhookexamplecomv1.SetupWordpressWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Wordpress")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
