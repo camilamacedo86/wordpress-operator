@@ -43,7 +43,13 @@ var (
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
+<<<<<<< HEAD
 // temporary environment to validate project changes with the purposed to be used in CI jobs.
+||||||| d6ec06c
+// temporary environment to validate project changes with the the purposed to be used in CI jobs.
+=======
+// temporary environment to validate project changes with the purpose of being used in CI jobs.
+>>>>>>> upgrade
 // The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
 // CertManager.
 func TestE2E(t *testing.T) {

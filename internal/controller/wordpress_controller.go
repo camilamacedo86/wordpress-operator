@@ -46,9 +46,21 @@ type WordpressReconciler struct {
 // the user.
 //
 // For more details, check Reconcile and its Result here:
+<<<<<<< HEAD
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
+||||||| d6ec06c
+// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.0/pkg/reconcile
+=======
+// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
+>>>>>>> upgrade
 func (r *WordpressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+<<<<<<< HEAD
 	log := logf.FromContext(ctx)
+||||||| d6ec06c
+	_ = log.FromContext(ctx)
+=======
+	_ = logf.FromContext(ctx)
+>>>>>>> upgrade
 
 	// Fetch the Wordpress instance
 	wordpress := &examplecomv1.Wordpress{}
