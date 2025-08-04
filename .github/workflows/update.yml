@@ -1,0 +1,67 @@
+name: Kubebuilder Update
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly automation
+  workflow_dispatch:       # Manual runs
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch main branch
+        run: |
+          git fetch origin main:main
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Kubebuilder
+        run: |
+          curl -L -o kubebuilder "https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)"
+          chmod +x kubebuilder
+          sudo mv kubebuilder /usr/local/bin/
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create merge branch
+        id: create_branch
+        run: |
+          BRANCH_NAME="kubebuilder-update-to-version-$(date +'%Y%m%d%H%M%S')"
+          git checkout -b "$BRANCH_NAME"
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      - name: Run kubebuilder alpha update
+        run: |
+          kubebuilder alpha update --force --from-version v4.5.2 || echo "Continuing despite errors due to --force"
+
+      - name: Push branch
+        run: |
+          git push origin "${{ steps.create_branch.outputs.branch }}" --force
+
+      - name: Create pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: update Kubebuilder scaffolding" \
+            --body "This PR was created automatically using \`kubebuilder alpha update --force\`. Please review the changes and merge." \
+            --base main \
+            --head "${{ steps.create_branch.outputs.branch }}" \
+            --repo "${{ github.repository }}" \
+            || echo "PR already exists or failed to create."
