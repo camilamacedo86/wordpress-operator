@@ -45,12 +45,11 @@ jobs:
           BRANCH=$(git branch --show-current)
           echo "Current branch: $BRANCH"
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          
-          if [[ ! "$BRANCH" =~ ^tmp-kb-update-merge-.*$ ]]; then
-            echo "Error: Branch $BRANCH is not a valid kubebuilder-generated merge branch."
+ 
+          if [[ ! "$BRANCH" =~ merge ]]; then
+            echo "Error: Invalid branch also contains forbidden word 'merge'."
             exit 1
           fi
-
       - name: Create pull request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
