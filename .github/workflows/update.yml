@@ -35,20 +35,21 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create merge branch
-        id: create_branch
-        run: |
-          BRANCH_NAME="kubebuilder-update-to-version-$(date +'%Y%m%d%H%M%S')"
-          git checkout -b "$BRANCH_NAME"
-          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
-
       - name: Run kubebuilder alpha update
         run: |
           kubebuilder alpha update --force --from-version v4.5.2 || echo "Continuing despite errors due to --force"
 
-      - name: Push branch
+      - name: Ensure merge branch is a kubebuilder-generated one
+        id: check_branch
         run: |
-          git push origin "${{ steps.create_branch.outputs.branch }}" --force
+          BRANCH=$(git branch --show-current)
+          echo "Current branch: $BRANCH"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          
+          if [[ ! "$BRANCH" =~ ^tmp-kb-update-merge-.*$ ]]; then
+            echo "Error: Branch $BRANCH is not a valid kubebuilder-generated merge branch."
+            exit 1
+          fi
 
       - name: Create pull request
         env:
@@ -59,8 +60,7 @@ jobs:
             --body "This PR was created automatically using \`kubebuilder alpha update --force\`. Please review the changes and merge." \
             --base main \
             --head "${{ steps.create_branch.outputs.branch }}" \
-            --repo "${{ github.repository }}" \
-            || echo "PR already exists or failed to create."
+            --repo "${{ github.repository }}"
 
       - name: Add label to PR
         if: success()
