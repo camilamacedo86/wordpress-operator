@@ -3,7 +3,7 @@ name: Kubebuilder Update
 on:
   schedule:
     - cron: '0 6 * * 1'  # Every Monday at 6:00 AM UTC
-  push:
+  pull_request:
     paths:
       - '.github/workflows/kubebuilder-update.yml'
   workflow_dispatch:
