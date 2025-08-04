@@ -40,16 +40,23 @@ jobs:
           kubebuilder alpha update --force --from-version v4.5.2 || echo "Continuing despite errors due to --force"
 
       - name: Ensure merge branch is a kubebuilder-generated one
-        id: check_branch
         run: |
-          BRANCH=$(git branch --show-current)
-          echo "Current branch: $BRANCH"
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
- 
           if [[ ! "$BRANCH" =~ merge ]]; then
             echo "Error: Invalid branch also contains forbidden word 'merge'."
             exit 1
           fi
+
+      - name: Create branch
+        id: create_branch
+        run: |
+          BRANCH="kubebuilder-update-$(date +'%Y%m%d%H%M%S')"
+          git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Push branch
+        run: |
+          git push origin "${{ steps.create_branch.outputs.branch }}" --force
+
       - name: Create pull request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
