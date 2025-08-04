@@ -3,6 +3,7 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 domain: my.domain
+cliVersion: 4.5.2
 layout:
 - go.kubebuilder.io/v4
 projectName: wordpress-operator
