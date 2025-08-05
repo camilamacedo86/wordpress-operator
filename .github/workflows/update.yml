@@ -51,10 +51,6 @@ jobs:
             exit 1
           fi
 
-      - name: Push branch
-        run: |
-          git push origin "${{ steps.create_branch.outputs.branch }}" --force
-
       - name: Create pull request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
