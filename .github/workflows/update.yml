@@ -1,0 +1,75 @@
+name: Kubebuilder Update
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly automation
+  workflow_dispatch:       # Manual runs
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install Kubebuilder
+        run: |
+          curl -L -o kubebuilder "https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)"
+          chmod +x kubebuilder
+          sudo mv kubebuilder /usr/local/bin/
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run kubebuilder alpha update
+        run: |
+          kubebuilder alpha update --force --from-version v4.5.2 || echo "Continuing despite errors due to --force"
+
+      - name: Ensure merge branch was generated
+        id: check_branch
+        run: |
+          MERGE_BRANCH=$(git branch --show-current)
+          echo "Current branch: $MERGE_BRANCH"
+          echo "branch=$MERGE_BRANCH" >> $GITHUB_OUTPUT
+ 
+          if [[ ! "$MERGE_BRANCH" =~ merge ]]; then
+            echo "Error: Current branch is not the merge branch."
+            exit 1
+          fi
+
+      - name: Push branch
+        run: |
+          git push origin "${{ steps.check_branch.outputs.branch }}" --force
+
+      - name: Create pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: update Kubebuilder scaffolding" \
+            --body "This PR was created automatically using \`kubebuilder alpha update --force\`. Please review the changes and merge." \
+            --base main \
+            --head "${{ steps.check_branch.outputs.branch }}" \
+            --repo "${{ github.repository }}"
+
+      - name: Add label to PR
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_URL=$(gh pr view --json url -q .url)
+          gh pr edit "$PR_URL" --add-label "kubebuilder-update"
