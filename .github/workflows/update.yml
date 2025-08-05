@@ -1,0 +1,100 @@
+name: Kubebuilder Update
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install Kubebuilder
+        run: |
+          curl -L -o kubebuilder "https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)"
+          chmod +x kubebuilder
+          sudo mv kubebuilder /usr/local/bin/
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "kubebuilder-bot[app]"
+          git config --global user.email "kubebuilder-bot@apps.github.com"
+
+      - name: Run kubebuilder alpha update
+        run: |
+          kubebuilder alpha update --force --from-version v4.5.2 || echo "Continuing despite errors due to --force"
+
+      - name: Get generated branch name
+        id: branch
+        run: |
+          BRANCH=$(git branch --show-current)
+          echo "Detected branch: $BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Push updated branch
+        run: |
+          git push origin "${{ steps.branch.outputs.branch }}" --force
+
+      - name: Generate GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          installation-id: ${{ secrets.APP_INSTALLATION_ID }}
+
+      - name: Create pull request using GitHub App token
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        run: |
+          echo "Creating pull request from branch $BRANCH"
+
+          PR_PAYLOAD=$(jq -n \
+            --arg title "chore: update Kubebuilder scaffolding" \
+            --arg body "This PR was created automatically using \`kubebuilder alpha update --force\`." \
+            --arg head "$BRANCH" \
+            --arg base "main" \
+            '{title: $title, body: $body, head: $head, base: $base}')
+
+          curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/$REPO/pulls \
+            -d "$PR_PAYLOAD"
+
+      - name: Add label to pull request
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        run: |
+          echo "Getting PR number for branch: $BRANCH"
+          PR_NUMBER=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/$REPO/pulls?head=$REPO:$BRANCH \
+            | jq '.[0].number')
+
+          echo "Found PR number: $PR_NUMBER"
+
+          curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/$REPO/issues/$PR_NUMBER/labels \
+            -d '{"labels": ["kubebuilder-update"]}'
