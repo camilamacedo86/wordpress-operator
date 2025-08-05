@@ -51,6 +51,10 @@ jobs:
             exit 1
           fi
 
+      - name: Push branch
+        run: |
+          git push origin "${{ steps.check_branch.outputs.branch }}" --force
+
       - name: Create pull request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,7 +63,7 @@ jobs:
             --title "chore: update Kubebuilder scaffolding" \
             --body "This PR was created automatically using \`kubebuilder alpha update --force\`. Please review the changes and merge." \
             --base main \
-            --head "${{ steps.check_branch.outputs.merge_branch }}" \
+            --head "${{ steps.check_branch.outputs.branch }}" \
             --repo "${{ github.repository }}"
 
       - name: Add label to PR
