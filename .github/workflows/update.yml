@@ -55,21 +55,44 @@ jobs:
         run: |
           git push origin "${{ steps.check_branch.outputs.branch }}" --force
 
-      - name: Create pull request
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr create \
-            --title "chore: update Kubebuilder scaffolding" \
-            --body "This PR was created automatically using \`kubebuilder alpha update --force\`. Please review the changes and merge." \
-            --base main \
-            --head "${{ steps.check_branch.outputs.branch }}" \
-            --repo "${{ github.repository }}"
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Add label to PR
+      - name: Create pull request via REST API
+        id: create_pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_DATA=$(jq -n \
+            --arg title "chore: update Kubebuilder scaffolding" \
+            --arg body "This PR was created automatically using \`kubebuilder alpha update --force\`. Please review the changes and merge." \
+            --arg head "${{ steps.check_branch.outputs.branch }}" \
+            --arg base "main" \
+            '{title: $title, head: $head, base: $base, body: $body}')
+          
+          RESPONSE=$(curl -s -w "%{http_code}" -o response.json -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/pulls \
+            -d "$PR_DATA")
+          
+          if [[ "$RESPONSE" != "201" ]]; then
+            echo "Failed to create PR:"
+            cat response.json
+            exit 1
+          fi
+          
+          PR_NUMBER=$(jq '.number' response.json)
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Add label to PR via REST API
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR_URL=$(gh pr view --json url -q .url)
-          gh pr edit "$PR_URL" --add-label "kubebuilder-update"
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.create_pr.outputs.pr_number }}/labels \
+            -d '{"labels": ["kubebuilder-update"]}'
+
