@@ -31,43 +31,51 @@ jobs:
           chmod +x kubebuilder
           sudo mv kubebuilder /usr/local/bin/
 
-      - name: Configure Git
+      - name: Configure Git for GitHub App
+        id: committer
         run: |
-          git config --global user.name "kubebuilder-bot[app]"
-          git config --global user.email "kubebuilder-bot@apps.github.com"
+          echo "user-id=$(gh api "/users/${{ vars.APP_SLUG }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set Git Committer (GitHub App)
+        run: |
+          git config --global user.name '${{ vars.APP_SLUG }}[bot]'
+          git config --global user.email '${{ steps.committer.outputs.user-id }}+${{ vars.APP_SLUG }}[bot]@users.noreply.github.com'
 
       - name: Run kubebuilder alpha update
         run: |
-          kubebuilder alpha update --force --from-version v4.5.2 || echo "Continuing despite errors due to --force"
+          kubebuilder alpha update --force --from-version v4.5.2 || echo "No update required"
 
-      - name: Get generated branch name
+      - name: Detect generated branch
         id: branch
         run: |
           BRANCH=$(git branch --show-current)
           echo "Detected branch: $BRANCH"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
-      - name: Push updated branch
+      - name: Push generated branch
         run: |
           git push origin "${{ steps.branch.outputs.branch }}" --force
 
-      - name: Generate GitHub App token
-        id: app_token
-        uses: actions/create-github-app-token@v1
+      - name: Create GitHub App token (v2.0.6)
+        id: app-token
+        uses: actions/create-github-app-token@v2.0.6
         with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          installation-id: ${{ secrets.APP_INSTALLATION_ID }}
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
-      - name: Create pull request using GitHub App token
+      - name: Create pull request
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
-          echo "Creating pull request from branch $BRANCH"
+          echo "Creating PR from $BRANCH to main"
 
-          PR_PAYLOAD=$(jq -n \
+          PR_DATA=$(jq -n \
             --arg title "chore: update Kubebuilder scaffolding" \
             --arg body "This PR was created automatically using \`kubebuilder alpha update --force\`." \
             --arg head "$BRANCH" \
@@ -78,20 +86,19 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/$REPO/pulls \
-            -d "$PR_PAYLOAD"
+            -d "$PR_DATA"
 
-      - name: Add label to pull request
+      - name: Add PR label
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
-          echo "Getting PR number for branch: $BRANCH"
           PR_NUMBER=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/repos/$REPO/pulls?head=$REPO:$BRANCH \
+            "https://api.github.com/repos/$REPO/pulls?head=$REPO:$BRANCH" \
             | jq '.[0].number')
 
-          echo "Found PR number: $PR_NUMBER"
+          echo "PR number is $PR_NUMBER"
 
           curl -s -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
