@@ -42,11 +42,11 @@ jobs:
       - name: Ensure merge branch was generated
         id: check_branch
         run: |
-          BRANCH=$(git branch --show-current)
-          echo "Current branch: $BRANCH"
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          MERGE_BRANCH=$(git branch --show-current)
+          echo "Current branch: $MERGE_BRANCH"
+          echo "branch=$MERGE_BRANCH" >> $GITHUB_OUTPUT
  
-          if [[ ! "$BRANCH" =~ merge ]]; then
+          if [[ ! "$MERGE_BRANCH" =~ merge ]]; then
             echo "Error: Current branch is not the merge branch."
             exit 1
           fi
@@ -59,7 +59,7 @@ jobs:
             --title "chore: update Kubebuilder scaffolding" \
             --body "This PR was created automatically using \`kubebuilder alpha update --force\`. Please review the changes and merge." \
             --base main \
-            --head "${{ steps.create_branch.outputs.branch }}" \
+            --head "${{ steps.check_branch.outputs.merge_branch }}" \
             --repo "${{ github.repository }}"
 
       - name: Add label to PR
