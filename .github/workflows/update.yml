@@ -40,7 +40,7 @@ jobs:
 
       - name: Run kubebuilder alpha update
         run: |
-          kubebuilder alpha update --force || true
+          kubebuilder alpha update --force --from-version v4.5.2
 
       - name: Detect merge branch & conflict status
         id: detect
