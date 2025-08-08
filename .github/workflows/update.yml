@@ -47,19 +47,17 @@ jobs:
           git add .github/workflows
           git commit --amend --no-edit 
 
-      - name: Check commit history
+      - name: Soft reset last 4 commits and checkout main
         run: |
-          git status
-          git log --all --oneline
+          git reset --soft HEAD~4
+          git checkout main
 
-      - name: Detect merge branch and create PR
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_BRANCH=$(git branch --show-current) 
-          git push origin "$PR_BRANCH"
-          gh pr create \
-            --title "chore: update Kubebuilder scaffolding" \
-            --body "Automated update of Kubebuilder project scaffolding to latest version." \
-            --base main \
-            --head "$PR_BRANCH"
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update Kubebuilder scaffolding"
+          title: "chore: update Kubebuilder scaffolding"
+          body: "Automated update of Kubebuilder project scaffolding to latest version."
+          branch: kubebuilder-alpha-update
+          delete-branch: true
