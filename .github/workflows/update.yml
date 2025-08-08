@@ -87,11 +87,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_URL=$(gh pr create \
-            --title "chore: update Kubebuilder scaffolding to ${{ steps.kb.outputs.version }}" \
-            --body-file pr_body.md \
-            --base main \
-            --head "${{ steps.detect.outputs.branch }}" \
-            --json url -q .url)
+          --title "chore: update Kubebuilder scaffolding to ${{ steps.kb.outputs.version }}" \
+          --body-file pr_body.md \
+          --base main \
+          --head "${{ steps.detect.outputs.branch }}" \
+          --fill \
+          --draft | tail -n 1)
+
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Build issue body (file)
