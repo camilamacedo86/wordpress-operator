@@ -18,11 +18,12 @@ package controller
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/api/errors"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	examplecomv1 "github/camilamacedo86/wordpress-operator/api/v1"
 )
@@ -45,11 +46,23 @@ type WordpressReconciler struct {
 // the user.
 //
 // For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.0/pkg/reconcile
+// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *WordpressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	// Fetch the Wordpress instance
+	wordpress := &examplecomv1.Wordpress{}
+	err := r.Get(ctx, req.NamespacedName, wordpress)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			log.Info("wordpress resource not found. Ignoring since object must be deleted")
+			return ctrl.Result{}, nil
+		}
+		log.Error(err, "Failed to get wordpress")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("wordpress reconciled")
 
 	return ctrl.Result{}, nil
 }
