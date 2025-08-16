@@ -75,6 +75,7 @@ replacements:
 #         delimiter: '.'
 #         index: 0
 #         create: true
+<<<<<<< HEAD
 #     - select: # Uncomment the following to set the Service name for TLS config in Prometheus ServiceMonitor
 #         kind: ServiceMonitor
 #         group: monitoring.coreos.com
@@ -87,6 +88,22 @@ replacements:
 #         index: 0
 #         create: true
 
+||||||| 1815310
+#
+=======
+#     - select: # Uncomment the following to set the Service name for TLS config in Prometheus ServiceMonitor
+#         kind: ServiceMonitor
+#         group: monitoring.coreos.com
+#         version: v1
+#         name: controller-manager-metrics-monitor
+#       fieldPaths:
+#         - spec.endpoints.0.tlsConfig.serverName
+#       options:
+#         delimiter: '.'
+#         index: 0
+#         create: true
+#
+>>>>>>> tmp-original-16-08-25-20-22
 # - source:
 #     kind: Service
 #     version: v1
@@ -105,9 +122,44 @@ replacements:
 #         delimiter: '.'
 #         index: 1
 #         create: true
+<<<<<<< HEAD
 #     - select: # Uncomment the following to set the Service namespace for TLS in Prometheus ServiceMonitor
 #         kind: ServiceMonitor
 #         group: monitoring.coreos.com
+||||||| 1815310
+#
+# - source: # Uncomment the following block if you have any webhook
+#     kind: Service
+#     version: v1
+#     name: webhook-service
+#     fieldPath: .metadata.name # Name of the service
+#   targets:
+#     - select:
+#         kind: Certificate
+#         group: cert-manager.io
+=======
+#     - select: # Uncomment the following to set the Service namespace for TLS in Prometheus ServiceMonitor
+#         kind: ServiceMonitor
+#         group: monitoring.coreos.com
+#         version: v1
+#         name: controller-manager-metrics-monitor
+#       fieldPaths:
+#         - spec.endpoints.0.tlsConfig.serverName
+#       options:
+#         delimiter: '.'
+#         index: 1
+#         create: true
+#
+# - source: # Uncomment the following block if you have any webhook
+#     kind: Service
+#     version: v1
+#     name: webhook-service
+#     fieldPath: .metadata.name # Name of the service
+#   targets:
+#     - select:
+#         kind: Certificate
+#         group: cert-manager.io
+>>>>>>> tmp-original-16-08-25-20-22
 #         version: v1
 #         name: controller-manager-metrics-monitor
 #       fieldPaths:
