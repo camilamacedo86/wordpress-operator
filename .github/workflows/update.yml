@@ -72,5 +72,5 @@ jobs:
             --force \
             --push \
             --restore-path .github/workflows \
-            --open-gh-issue
+            --open-gh-issue \
             --from-version v4.5.2
