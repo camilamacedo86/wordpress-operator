@@ -1,76 +1,136 @@
 name: Alpha Update
-# Alpha update requires write access to the repository to create a branch
-# with the update files and allow you to open a pull request using the
-# link provided in the issue. The branch created will be named in the
-# format kubebuilder-update-from-<from-version>-to-<to-version> by default.
-# To protect your codebase, please ensure that you have branch protection rules
-# configured for your main branches. This will guarantee that no one can bypass a review
-# and push directly to a branch like 'main'.
 permissions:
   contents: write
   issues: write
+  models: read
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * 2" # Every Tuesday at 00:00 UTC
+    - cron: "0 0 * * 2"
 
 jobs:
   alpha-update:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MODEL: openai/gpt-4o
 
     steps:
-      # Step 1: Checkout the repository.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # Step 2: Configure Git to create commits with the GitHub Actions bot.
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # Step 3: Set up Go environment.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: stable
 
-      # Step 4: Install Kubebuilder from the master branch (tries `go install`, falls back to local build).
       - name: Install Kubebuilder (master)
         run: |
           set -euxo pipefail
-
-          # Ensure GOPATH/bin is available to later steps
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          # Also export PATH for this step
           export PATH="$(go env GOPATH)/bin:$PATH"
-
-          # Try installing from master via go install (v4 module path). If that fails, build from source.
           if ! go install sigs.k8s.io/kubebuilder/v4/cmd/kubebuilder@master; then
             git clone --depth 1 --branch master https://github.com/kubernetes-sigs/kubebuilder /tmp/kubebuilder
             make -C /tmp/kubebuilder install
           fi
-
           kubebuilder version
 
-      # Step 5: Run the Kubebuilder alpha update command.
-      # More info: https://kubebuilder.io/reference/commands/alpha_update
       - name: Run kubebuilder alpha update
         run: |
-          # Executes the update command with specified flags.
-          # --force: Completes the merge even if conflicts occur, leaving conflict markers.
-          # --push: Automatically pushes the resulting output branch to the 'origin' remote.
-          # --restore-path: Preserves specified paths (e.g., CI workflow files) when squashing.
-          # --open-gh-issue: Creates a GitHub Issue with a link for opening a PR for review.
           kubebuilder alpha update \
             --force \
             --push \
             --restore-path .github/workflows \
-            --open-gh-issue
-            --from-version v4.5.2
+            --open-gh-issue \
+            --from-version v4.5.2 \
+            --output-branch test-ai-update-flow
+
+      # Create a compact patch (zero context) to keep requests small
+      - name: Create patch of last commit
+        run: |
+          git show --no-color --no-ext-diff --unified=0 HEAD > update.patch
+
+      # Rolling (incremental) summarization to avoid 413s; YAML-safe (no tricky inline quotes)
+      - name: Generate summary with GitHub Models (rolling, 413-safe)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="https://api.github.com/copilot_internal/v2/models/$MODEL/chat/completions"
+          HDRS=(-H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Content-Type: application/json")
+
+          # Split the patch into small chunks
+          CHUNK_BYTES=${CHUNK_BYTES:-60000}
+          rm -f chunk_* response*.json COMMENT.md msg.txt || true
+          split -b "$CHUNK_BYTES" --additional-suffix=.txt -d -a 3 update.patch chunk_
+          if ! ls chunk_*.txt >/dev/null 2>&1; then cp update.patch chunk_000.txt; fi
+
+          summary="**AI-generated summary (may contain errors).**"
+          i=0
+          for f in $(ls -1 chunk_*.txt | sort); do
+            {
+              cat prompt.txt
+              echo
+              echo "Current summary:"
+              echo "<<<"
+              printf '%s\n' "$summary"
+              echo ">>>"
+              echo
+              echo "New diff chunk:"
+              echo "<<<"
+              cat "$f"
+              echo ">>>"
+            } > msg.txt
+
+            body=$(jq -n --arg model "$MODEL" --rawfile content msg.txt \
+              '{ messages: [ { "role":"user", "content": $content } ],
+              max_tokens: 1200,
+              temperature: 0 }')
+          
+            curl -sS -L --fail-with-body "${HDRS[@]}" "$API" -d "$body" \
+            | tee "response_$i.json" >/dev/null
+
+            summary=$(jq -e -r '.choices[0].message.content // empty' "response_$i.json")
+            if [ -z "$summary" ]; then
+              echo "Empty response while updating summary (chunk $i). See response_$i.json:" >&2
+              cat "response_$i.json" >&2
+              exit 1
+            fi
+            i=$((i+1))
+          done
+
+          printf "%s\n" "$summary" > COMMENT.md
+          test -s COMMENT.md
+
+      - name: Determine update issue number
+        id: find-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          out=$(gh issue list --state open --limit 100 --json number,title,createdAt)
+          issue_number=$(echo "$out" | jq -r '
+            sort_by(.createdAt)
+            | map(select(.title|test("^\\[Action Required\\] Upgrade the Scaffold: v[0-9.]+ -> v[0-9.]+$")))
+            | last.number // empty
+          ')
+          echo "issue_number=${issue_number}" >> "$GITHUB_OUTPUT"
+
+      - name: Post comment to issue
+        if: ${{ steps.find-issue.outputs.issue_number != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ steps.find-issue.outputs.issue_number }}" --body-file COMMENT.md
