@@ -15,6 +15,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MODEL: openai/gpt-4.1  # default model (can override via env if needed)
 
     steps:
       - name: Checkout repository
@@ -52,40 +53,14 @@ jobs:
             --restore-path .github/workflows \
             --open-gh-issue \
             --from-version v4.5.2 \
-            --output-branch test-ai-update-flow-2
+            --output-branch test-ai-update-flow
 
       # Create a compact patch (zero context) to keep requests small
       - name: Create patch of last commit
         run: |
           git show --no-color --no-ext-diff --unified=0 HEAD > update.patch
 
-      # Pick latest available OpenAI chat model; fallback to gpt-4.1
-      - name: Select latest OpenAI chat model (fallback to gpt-4.1)
-        id: model
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          catalog=$(curl -sS -L \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://models.github.ai/catalog/models)
-
-          model_id=$(
-            echo "$catalog" | jq -r '
-              map(select(.publisher=="OpenAI"
-                         and (.id|test("^openai/gpt"))
-                         and (.supported_output_modalities|index("text"))))
-              | sort_by(.version)
-              | last
-              | .id // empty
-            '
-          )
-          if [ -z "$model_id" ]; then model_id="openai/gpt-4.1"; fi
-          echo "id=$model_id" >> "$GITHUB_OUTPUT"
-
-      # ROLLING (incremental) summarization to avoid 413 entirely
+      # Rolling (incremental) summarization to avoid 413s
       - name: Generate summary with GitHub Models (rolling, 413-safe)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,14 +71,13 @@ jobs:
                 -H "Authorization: Bearer $GITHUB_TOKEN" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Content-Type: application/json")
-          MODEL="${{ steps.model.outputs.id }}"
+          MODEL="${MODEL:-openai/gpt-4.1}"
 
-          # Split the patch into small chunks; reduce if you still hit 413 (e.g., 30000)
+          # Split the patch into small chunks; lower to 30000 if you still hit 413
           CHUNK_BYTES=${CHUNK_BYTES:-60000}
           rm -f chunk_* response*.json COMMENT.md || true
           split -b "$CHUNK_BYTES" -d -a 3 update.patch chunk_
 
-          # Initial disclaimer
           summary="**AI-generated summary (may contain errors).**"
 
           i=0
@@ -118,7 +92,6 @@ Requirements:
   - Cause, how to resolve, recommended next steps.
 EOF
 )
-
             msg=$(printf "%s\n\nCurrent summary:\n<<<\n%s\n>>>\n\nNew diff chunk:\n<<<\n%s\n>>>\n" \
                   "$prompt" "$summary" "$(cat "$f")")
 
@@ -142,6 +115,7 @@ EOF
 
           printf "%s\n" "$summary" > COMMENT.md
           test -s COMMENT.md
+          cat COMMENT.md
 
       - name: Determine update issue number
         id: find-issue
