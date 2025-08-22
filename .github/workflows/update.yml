@@ -1,20 +1,13 @@
 name: Alpha Update
-# Alpha update requires write access to the repository to create a branch
-# with the update files and allow you to open a pull request using the
-# link provided in the issue. The branch created will be named in the
-# format kubebuilder-update-from-<from-version>-to-<to-version> by default.
-# To protect your codebase, please ensure that you have branch protection rules
-# configured for your main branches. This will guarantee that no one can bypass a review
-# and push directly to a branch like 'main'.
 permissions:
   contents: write
   issues: write
-  models: read  # required for GitHub Models API
+  models: read  # required to call GitHub Models
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * 2" # Every Tuesday at 00:00 UTC
+    - cron: "0 0 * * 2"
 
 jobs:
   alpha-update:
@@ -23,45 +16,33 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      # Step 1: Checkout the repository.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # Step 2: Configure Git to create commits with the GitHub Actions bot.
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # Step 3: Set up Go environment.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: stable
 
-      # Step 4: Install Kubebuilder from the master branch (tries `go install`, falls back to local build).
       - name: Install Kubebuilder (master)
         run: |
           set -euxo pipefail
-
-          # Ensure GOPATH/bin is available to later steps
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          # Also export PATH for this step
           export PATH="$(go env GOPATH)/bin:$PATH"
-
-          # Try installing from master via go install (v4 module path). If that fails, build from source.
           if ! go install sigs.k8s.io/kubebuilder/v4/cmd/kubebuilder@master; then
             git clone --depth 1 --branch master https://github.com/kubernetes-sigs/kubebuilder /tmp/kubebuilder
             make -C /tmp/kubebuilder install
           fi
-
           kubebuilder version
 
-      # Step 5: Run the Kubebuilder alpha update command.
-      # More info: https://kubebuilder.io/reference/commands/alpha_update
       - name: Run kubebuilder alpha update
         run: |
           kubebuilder alpha update \
@@ -70,30 +51,30 @@ jobs:
             --restore-path .github/workflows \
             --open-gh-issue \
             --from-version v4.5.2 \
-            --output-branch test-ai-update-2
+            --output-branch test-ai-update
 
-      - name: Create patch of last commit # Users may want to extract other info
+      # Make a smaller patch: zero-context lines reduces size a lot.
+      - name: Create patch of last commit
         run: |
-          git show HEAD > update.patch
+          git show --no-color --unified=0 HEAD > update.patch
 
-      - name: Prepare model prompt # Room for prompt engineering
+      - name: Prepare model prompt
         run: |
           cat > prompt.txt <<'EOF'
           Start by stating that this summary is AI generated and can contain errors.
           You are a concise update summarizer for an automated Kubebuilder scaffold update.
           Analyze the patch and write a GitHub Issue comment that explains what changed.
           Scan the patch for Git conflict markers (<<<<<<<, =======, >>>>>>>). For each conflict:
-          Explain what caused the conflict.
-          How to properly resolve them.
-          Inform the user about the recommended next steps.
+          - Explain the likely cause.
+          - Suggest how to resolve it.
+          - Recommend next steps.
           Constraints: Markdown only, no raw diff snippets.
 
           ---- DIFF BELOW ----
           EOF
           cat update.patch >> prompt.txt
 
-      # NEW: Pick the latest available OpenAI chat model from the GitHub Models catalog
-      - name: Select latest OpenAI chat model
+      - name: Select latest OpenAI chat model (fallback to gpt-4.1)
         id: model
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -105,45 +86,78 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://models.github.ai/catalog/models)
 
-          # Prefer newest OpenAI GPT-* chat model by version; fallback to gpt-4.1
-          model_id=$(echo "$catalog" | jq -r '
-            map(select(.publisher=="OpenAI" and (.id|test("^openai/gpt")) and (.supported_output_modalities|index("text")))) 
-            | sort_by(.version) 
-            | last 
-            | .id // empty
-          ')
+          model_id=$(
+            echo "$catalog" | jq -r '
+              map(select(.publisher=="OpenAI"
+                         and (.id|test("^openai/gpt"))
+                         and (.supported_output_modalities|index("text"))))
+              | sort_by(.version)
+              | last
+              | .id // empty
+            '
+          )
           if [ -z "$model_id" ]; then model_id="openai/gpt-4.1"; fi
           echo "id=$model_id" >> "$GITHUB_OUTPUT"
 
-      - name: Generate summary with GitHub Models # Using latest model + versioned API
+      # CHUNKED inference to avoid 413
+      - name: Generate summary with GitHub Models (chunked)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          API="https://models.github.ai/inference/chat/completions"
+          HDRS=(-H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Content-Type: application/json")
+          MODEL="${{ steps.model.outputs.id }}"
 
-          body=$(jq -Rs --arg model "${{ steps.model.outputs.id }}" '
-            {
-              model: $model,
-              messages: [ { "role": "user", "content": . } ],
-              max_tokens: 4000,
-              temperature: 0
-            }' < prompt.txt)
+          # Split prompt into ~180 KB chunks to stay well below body limits
+          CHUNK_BYTES=${CHUNK_BYTES:-180000}
+          rm -f prompt_part_* partial_*.md response*.json COMMENT.md
 
-          # Call Models API with recommended headers & fail on HTTP errors
-          curl -sS -L --fail-with-body \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Content-Type: application/json" \
-            https://models.github.ai/inference/chat/completions \
-            -d "$body" \
-            | tee response.json >/dev/null
+          split -b "$CHUNK_BYTES" -d -a 3 prompt.txt prompt_part_
 
-          # Extract text; stop the job if empty to avoid posting a blank comment
-          jq -e -r '.choices[0].message.content // empty' response.json > COMMENT.md
+          i=0
+          for f in prompt_part_*; do
+            body=$(jq -Rs --arg model "$MODEL" '
+              { model: $model,
+                messages: [ { "role":"user", "content": . } ],
+                max_tokens: 1200, temperature: 0 }' < "$f")
+
+            curl -sS -L --fail-with-body "${HDRS[@]}" "$API" -d "$body" \
+              | tee "response_$i.json" >/dev/null
+
+            jq -e -r '.choices[0].message.content // empty' "response_$i.json" > "partial_$i.md"
+            if [ ! -s "partial_$i.md" ]; then
+              echo "Empty chunk summary (chunk $i). See response_$i.json:" >&2
+              cat "response_$i.json" >&2
+              exit 1
+            fi
+            i=$((i+1))
+          done
+
+          # Compose a final, single comment from chunk summaries
+          compose_prompt=$(
+            { echo "Combine the following chunk summaries into a single clear GitHub Issue comment.";
+              echo "Keep it concise, non-duplicative, and include a conflicts section if any were found.";
+              echo "Use Markdown only (no code fences with raw diff).";
+              echo; echo "---- CHUNK SUMMARIES ----"; cat partial_*.md; } \
+            | jq -Rs .
+          )
+
+          body=$(jq -n --arg model "$MODEL" --argjson content "$compose_prompt" \
+            '{ model: $model,
+               messages: [ { "role":"user", "content": $content } ],
+               max_tokens: 2000, temperature: 0 }')
+
+          curl -sS -L --fail-with-body "${HDRS[@]}" "$API" -d "$body" \
+            | tee response_compose.json >/dev/null
+
+          jq -e -r '.choices[0].message.content // empty' response_compose.json > COMMENT.md
           if [ ! -s COMMENT.md ]; then
-            echo "Models API returned no content. Full response:" >&2
-            cat response.json >&2
+            echo "Compose step produced no content. See response_compose.json:" >&2
+            cat response_compose.json >&2
             exit 1
           fi
 
