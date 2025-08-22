@@ -2,7 +2,7 @@ name: Alpha Update
 permissions:
   contents: write
   issues: write
-  models: read
+  metadata: read
 
 on:
   workflow_dispatch:
@@ -67,8 +67,8 @@ jobs:
         run: |
           set -euo pipefail
           API="https://models.github.ai/inference/chat/completions"
-          # Fixed Accept header to resolve 400 error
-          HDRS=(-H "Accept: application/vnd.github.v3+json" \
+          # Headers for GitHub Models API
+          HDRS=(-H "Accept: application/json" \
                 -H "Authorization: Bearer $GITHUB_TOKEN" \
                 -H "Content-Type: application/json")
 
