@@ -53,7 +53,7 @@ jobs:
             --restore-path .github/workflows \
             --open-gh-issue \
             --from-version v4.5.2 \
-            --output-branch test-ai-update-prompt
+            --output-branch test-ai-update-test
 
       # Create a compact patch (zero context) to keep requests small
       - name: Create patch of last commit
@@ -66,10 +66,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          API="https://api.github.com/copilot_internal/v2/models/$MODEL/chat/completions"
-          HDRS=(-H "Accept: application/vnd.github+json" \
+          API="https://api.github.com/v1/copilot/chat/completions"  # Updated endpoint
+          HDRS=(-H "Accept: application/vnd.github.v3+json" \
                 -H "Authorization: Bearer $GITHUB_TOKEN" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Content-Type: application/json")
 
           # Split the patch into small chunks
@@ -131,6 +130,4 @@ jobs:
       - name: Post comment to issue
         if: ${{ steps.find-issue.outputs.issue_number != '' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh issue comment "${{ steps.find-issue.outputs.issue_number }}" --body-file COMMENT.md
+          GH_TOKEN:
