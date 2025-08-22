@@ -53,7 +53,7 @@ jobs:
             --restore-path .github/workflows \
             --open-gh-issue \
             --from-version v4.5.2 \
-            --output-branch test-ai-update-flow
+            --output-branch test-ai-update-prompt
 
       # Create a compact patch (zero context) to keep requests small
       - name: Create patch of last commit
