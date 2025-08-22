@@ -16,98 +16,97 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
-    
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: stable
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-    - name: Configure Git
-      run: |
-        git config --local user.name "github-actions[bot]"
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
 
-    - name: Install Kubebuilder
-      run: |
-        git clone --depth 1 --branch master \
-          https://github.com/kubernetes-sigs/kubebuilder.git /tmp/kubebuilder
-        cd /tmp/kubebuilder
-        make build
-        sudo cp bin/kubebuilder /usr/local/bin/
-        kubebuilder version
+      - name: Configure Git
+        # local config is enough inside the runner workspace
+        run: |
+          git config --local user.name  "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local merge.conflictStyle diff3
+          git config --local rerere.enabled true
 
-    - name: Run kubebuilder alpha update
-      run: |
-        kubebuilder alpha update \
-          --force \
-          --restore-path .github/workflows \
-          --push \
-          --output-branch test-ai-update-test-53 \
-          --from-version v4.5.2 \
-          --open-gh-issue
+      - name: Install Kubebuilder
+        run: |
+          git clone --depth 1 --branch master https://github.com/kubernetes-sigs/kubebuilder.git /tmp/kubebuilder
+          cd /tmp/kubebuilder
+          make build
+          sudo cp bin/kubebuilder /usr/local/bin/
+          kubebuilder version
 
-    - name: Create patch of last commit # Users may want to extract other info
-      run: |
-        git show HEAD > update.patch
+      - name: Run kubebuilder alpha update
+        id: run_update
+        run: |
+          kubebuilder alpha update \
+            --force \
+            --restore-path .github/workflows \
+            --push \
+            --output-branch gh-model-update \
+            --from-version v4.5.2 \
+            --open-gh-issue
 
-    - name: Prepare model prompt # Room for prompt engineering
-      run: |
-        cat > prompt.txt <<'EOF'
-        Start by stating that this summary is AI generated and can contain errors.
-        You are a concise update summarizer for an automated Kubebuilder scaffold update.
-        Analyze the patch and write a GitHub Issue comment that explains what changed.
-        Scan the patch for Git conflict markers (<<<<<<<, =======, >>>>>>>). For each conflict:
-        Explain what caused the conflict.
-        How to properly resolve them.
-        Inform the user about the recommended next steps.
-        Constraints: Markdown only, no raw diff snippets.
+      - name: Detect conflict markers
+        id: detect
+        run: |
+          # Detect unresolved conflict markers in the repo
+          found_files="$(git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' || true)"
+          msg_flag="$(git log -1 --pretty=%B | grep -F '[with conflicts]' || true)"
+          if [ -n "$found_files" ] || [ -n "$msg_flag" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            printf "%s\n" "$found_files" > conflict_files.txt
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
 
-        ---- DIFF BELOW ----
-        EOF
-        cat update.patch >> prompt.txt
+      - name: Install gh-models extension
+        if: steps.detect.outputs.found == 'true'
+        run: |
+          gh extension install https://github.com/github/gh-models || true
+          gh models --help >/dev/null
 
-    - name: Generate summary with GitHub Models # Room for parameters tuning
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        set -o pipefail
-        jq -Rs '
-        {
-          model: "openai/gpt-4o",
-          messages: [
-            { "role": "user", "content": . }
-          ],
-          max_tokens: 4000,
-          temperature: 0
-        }' < prompt.txt \
-        | curl -sS https://models.github.ai/inference/chat/completions \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            --data @- \
-        | jq -r '.choices[0].message.content' > COMMENT.md
-
-    - name: Determine update issue number
-      id: find-issue
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        out=$(gh issue list --state open --limit 100 --json number,title,createdAt)
-        issue_number=$(echo "$out" | jq -r '
-          sort_by(.createdAt)
-          | map(select(.title|test("^\\[Action Required\\] Upgrade the Scaffold: v[0-9.]+ -> v[0-9.]+$")))
-          | last.number // empty
-        ')
-        echo "issue_number=${issue_number}" >> "$GITHUB_OUTPUT"
-
-    - name: Post comment to issue
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        gh issue comment "${{ steps.find-issue.outputs.issue_number }}" --body-file COMMENT.md
+      - name: Summarize conflicts with GitHub Models (gh)
+        if: steps.detect.outputs.found == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+          TITLE_PREFIX="[Action Required] Upgrade the Scaffold:"
+          ISSUE_NUMBER="$(gh issue list --search "$TITLE_PREFIX" --json number --jq '.[0].number' || true)"
+          
+          CONTEXT="$(printf 'Repo: %s\n\nLatest commit msg:\n%s\n\nConflicted files (grep):\n%s\n' \
+            "$REPO" \
+            "$(git log -1 --pretty=%B)" \
+            "$(cat conflict_files.txt)")"
+          
+          # Compact diff for precision (kept small to be token-safe)
+          DIFF="$(git diff --merge --unified=0 || true)"
+          
+          SUMMARY="$(
+            printf "%s\n\n--- DIFF (u=0) ---\n%s\n" "$CONTEXT" "$DIFF" \
+            | gh models run openai/gpt-4o-mini \
+              "You are a senior Go/K8s engineer. Using the stdin context (commit message, conflict list, compact diff):
+               1) List conflicted files,
+               2) Likely cause per file (scaffold vs local customization),
+               3) Exact resolution steps (edits/keeps/removals),
+               4) Follow-up commands (e.g., make manifests generate fmt vet lint-fix),
+               5) Flag risky changes or API deprecations.
+               Keep it concise and grouped by file."
+          )"
+          
+          if [ -n "$ISSUE_NUMBER" ]; then
+            gh issue comment "$ISSUE_NUMBER" --body "**AI conflict summary (gh models)**:\n\n$SUMMARY"
+          else
+            gh issue create --title "AI Conflict Summary (auto-update)" --body "$SUMMARY"
+          fi
