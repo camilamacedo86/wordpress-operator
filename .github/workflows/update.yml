@@ -2,7 +2,6 @@ name: Alpha Update
 permissions:
   contents: write
   issues: write
-  models: read  # required to call GitHub Models
 
 on:
   workflow_dispatch:
@@ -14,8 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      MODEL: openai/gpt-4.1  # default model
 
     steps:
       - name: Checkout repository
@@ -53,80 +50,14 @@ jobs:
             --restore-path .github/workflows \
             --open-gh-issue \
             --from-version v4.5.2 \
-            --output-branch test-ai-update-flow
+            --output-branch test-ai-update-123
 
-      # Create a compact patch (zero context) to keep requests small
-      - name: Create patch of last commit
+      - name: Create patch of last commit and save summary
         run: |
           git show --no-color --no-ext-diff --unified=0 HEAD > update.patch
-
-      # Rolling (incremental) summarization to avoid 413s; YAML-safe (no tricky inline quotes)
-      - name: Generate summary with GitHub Models (rolling, 413-safe)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          API="https://models.github.ai/inference/chat/completions"
-          HDRS=(-H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer $GITHUB_TOKEN" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                -H "Content-Type: application/json")
-          MODEL="${MODEL:-openai/gpt-4.1}"
-
-          # Split the patch into small chunks; lower to 30000 if you still hit 413
-          CHUNK_BYTES=${CHUNK_BYTES:-60000}
-          rm -f chunk_* response*.json COMMENT.md msg.txt prompt.txt || true
-          split -b "$CHUNK_BYTES" -d -a 3 update.patch chunk_ || true
-          if ! ls chunk_* >/dev/null 2>&1; then cp update.patch chunk_000; fi
-
-          # Static instructions (written once)
-          cat > prompt.txt <<'PROMPT'
-You are a concise update summarizer for an automated Kubebuilder scaffold update.
-Task: Update the running summary below based on the NEW diff chunk.
-Requirements:
-- Keep it tight (<= 300 words).
-- Use Markdown only (no raw diff snippets).
-- If you see conflict markers (<<<<<<<, =======, >>>>>>>), add a **Conflicts** section:
-  - Cause, how to resolve, recommended next steps.
-PROMPT
-
-          summary="**AI-generated summary (may contain errors).**"
-          i=0
-          for f in $(ls -1 chunk_* | sort); do
-            {
-              cat prompt.txt
-              echo
-              echo "Current summary:"
-              echo "<<<"
-              printf '%s\n' "$summary"
-              echo ">>>"
-              echo
-              echo "New diff chunk:"
-              echo "<<<"
-              cat "$f"
-              echo ">>>"
-            } > msg.txt
-
-            body=$(jq -n --arg model "$MODEL" --rawfile content msg.txt \
-              '{ model: $model,
-                 messages: [ { "role":"user", "content": $content } ],
-                 max_tokens: 1200,
-                 temperature: 0 }')
-
-            curl -sS -L --fail-with-body "${HDRS[@]}" "$API" -d "$body" \
-              | tee "response_$i.json" >/dev/null
-
-            summary=$(jq -e -r '.choices[0].message.content // empty' "response_$i.json")
-            if [ -z "$summary" ]; then
-              echo "Empty response while updating summary (chunk $i). See response_$i.json:" >&2
-              cat "response_$i.json" >&2
-              exit 1
-            fi
-            i=$((i+1))
-          done
-
-          printf "%s\n" "$summary" > COMMENT.md
-          test -s COMMENT.md
+          echo "## AI-generated Summary" > COMMENT.md
+          echo "A summary of the scaffold changes is available in the attached patch file." >> COMMENT.md
+          echo "You can apply the changes by checking out the 'test-ai-update-flow' branch." >> COMMENT.md
 
       - name: Determine update issue number
         id: find-issue
