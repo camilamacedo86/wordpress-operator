@@ -73,7 +73,8 @@ jobs:
             --push \
             --restore-path .github/workflows \
             --open-gh-issue \
-            --from-version v4.5.2
+            --from-version v4.5.2 \
+            --output-branch test-ai-update
 
       - name: Create patch of last commit # Users may want to extract other info
         run: |
