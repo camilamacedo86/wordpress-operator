@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -51,29 +52,14 @@ jobs:
             --restore-path .github/workflows \
             --open-gh-issue \
             --from-version v4.5.2 \
-            --output-branch test-ai-update-flow
+            --output-branch test-ai-update-flow-2
 
-      # Make a smaller patch: zero-context lines reduces size a lot.
+      # Create a compact patch (zero context) to keep requests small
       - name: Create patch of last commit
         run: |
-          git show --no-color --unified=0 HEAD > update.patch
+          git show --no-color --no-ext-diff --unified=0 HEAD > update.patch
 
-      - name: Prepare model prompt
-        run: |
-          cat > prompt.txt <<'EOF'
-          Start by stating that this summary is AI generated and can contain errors.
-          You are a concise update summarizer for an automated Kubebuilder scaffold update.
-          Analyze the patch and write a GitHub Issue comment that explains what changed.
-          Scan the patch for Git conflict markers (<<<<<<<, =======, >>>>>>>). For each conflict:
-          - Explain the likely cause.
-          - Suggest how to resolve it.
-          - Recommend next steps.
-          Constraints: Markdown only, no raw diff snippets.
-
-          ---- DIFF BELOW ----
-          EOF
-          cat update.patch >> prompt.txt
-
+      # Pick latest available OpenAI chat model; fallback to gpt-4.1
       - name: Select latest OpenAI chat model (fallback to gpt-4.1)
         id: model
         env:
@@ -99,8 +85,8 @@ jobs:
           if [ -z "$model_id" ]; then model_id="openai/gpt-4.1"; fi
           echo "id=$model_id" >> "$GITHUB_OUTPUT"
 
-      # CHUNKED inference to avoid 413
-      - name: Generate summary with GitHub Models (chunked)
+      # ROLLING (incremental) summarization to avoid 413 entirely
+      - name: Generate summary with GitHub Models (rolling, 413-safe)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -112,54 +98,50 @@ jobs:
                 -H "Content-Type: application/json")
           MODEL="${{ steps.model.outputs.id }}"
 
-          # Split prompt into ~180 KB chunks to stay well below body limits
-          CHUNK_BYTES=${CHUNK_BYTES:-180000}
-          rm -f prompt_part_* partial_*.md response*.json COMMENT.md
+          # Split the patch into small chunks; reduce if you still hit 413 (e.g., 30000)
+          CHUNK_BYTES=${CHUNK_BYTES:-60000}
+          rm -f chunk_* response*.json COMMENT.md || true
+          split -b "$CHUNK_BYTES" -d -a 3 update.patch chunk_
 
-          split -b "$CHUNK_BYTES" -d -a 3 prompt.txt prompt_part_
+          # Initial disclaimer
+          summary="**AI-generated summary (may contain errors).**"
 
           i=0
-          for f in prompt_part_*; do
-            body=$(jq -Rs --arg model "$MODEL" '
-              { model: $model,
-                messages: [ { "role":"user", "content": . } ],
-                max_tokens: 1200, temperature: 0 }' < "$f")
+          for f in chunk_*; do
+            prompt=$(cat <<'EOF'
+You are a concise update summarizer for an automated Kubebuilder scaffold update.
+Task: Update the running summary below based on the NEW diff chunk.
+Requirements:
+- Keep it tight (<= 300 words).
+- Use Markdown only (no raw diff snippets).
+- If you see conflict markers (<<<<<<<, =======, >>>>>>>), add a **Conflicts** section:
+  - Cause, how to resolve, recommended next steps.
+EOF
+)
+
+            msg=$(printf "%s\n\nCurrent summary:\n<<<\n%s\n>>>\n\nNew diff chunk:\n<<<\n%s\n>>>\n" \
+                  "$prompt" "$summary" "$(cat "$f")")
+
+            body=$(jq -n --arg model "$MODEL" --arg content "$msg" \
+              '{ model: $model,
+                 messages: [ { "role":"user", "content": $content } ],
+                 max_tokens: 1200,
+                 temperature: 0 }')
 
             curl -sS -L --fail-with-body "${HDRS[@]}" "$API" -d "$body" \
               | tee "response_$i.json" >/dev/null
 
-            jq -e -r '.choices[0].message.content // empty' "response_$i.json" > "partial_$i.md"
-            if [ ! -s "partial_$i.md" ]; then
-              echo "Empty chunk summary (chunk $i). See response_$i.json:" >&2
+            summary=$(jq -e -r '.choices[0].message.content // empty' "response_$i.json")
+            if [ -z "$summary" ]; then
+              echo "Empty response while updating summary (chunk $i). See response_$i.json:" >&2
               cat "response_$i.json" >&2
               exit 1
             fi
             i=$((i+1))
           done
 
-          # Compose a final, single comment from chunk summaries
-          compose_prompt=$(
-            { echo "Combine the following chunk summaries into a single clear GitHub Issue comment.";
-              echo "Keep it concise, non-duplicative, and include a conflicts section if any were found.";
-              echo "Use Markdown only (no code fences with raw diff).";
-              echo; echo "---- CHUNK SUMMARIES ----"; cat partial_*.md; } \
-            | jq -Rs .
-          )
-
-          body=$(jq -n --arg model "$MODEL" --argjson content "$compose_prompt" \
-            '{ model: $model,
-               messages: [ { "role":"user", "content": $content } ],
-               max_tokens: 2000, temperature: 0 }')
-
-          curl -sS -L --fail-with-body "${HDRS[@]}" "$API" -d "$body" \
-            | tee response_compose.json >/dev/null
-
-          jq -e -r '.choices[0].message.content // empty' response_compose.json > COMMENT.md
-          if [ ! -s COMMENT.md ]; then
-            echo "Compose step produced no content. See response_compose.json:" >&2
-            cat response_compose.json >&2
-            exit 1
-          fi
+          printf "%s\n" "$summary" > COMMENT.md
+          test -s COMMENT.md
 
       - name: Determine update issue number
         id: find-issue
