@@ -51,7 +51,7 @@ jobs:
             --restore-path .github/workflows \
             --open-gh-issue \
             --from-version v4.5.2 \
-            --output-branch test-ai-update-2
+            --output-branch test-ai-update-flow
 
       # Make a smaller patch: zero-context lines reduces size a lot.
       - name: Create patch of last commit
