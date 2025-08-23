@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: read
   models: read
 
 jobs:
@@ -17,100 +18,123 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MODEL: openai/gpt-4o-mini
 
     steps:
-      - name: Checkout PR
+      - name: Checkout PR HEAD
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Install gh-models extension
-        run: |
-          gh extension install https://github.com/github/gh-models || true
+      - name: Install gh-models
+        run: gh extension install https://github.com/github/gh-models || true
 
-      - name: Parse PR title (extract versions)
+      - name: Parse PR title (FROM/TO versions)
         id: parse
+        shell: bash
         run: |
           TITLE="${{ github.event.pull_request.title }}"
-          FROM="$(sed -nE 's/.*from (v[0-9]+\.[0-9]+\.[0-9]+).*/\1/i p' <<< "$TITLE" | head -n1)"
-          TO="$(sed -nE 's/.*to (v[0-9]+\.[0-9]+\.[0-9]+).*/\1/i p' <<< "$TITLE" | head -n1)"
-          echo "from=$FROM" >> "$GITHUB_OUTPUT"
-          echo "to=$TO" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch Kubebuilder release notes
-        id: rel
-        run: |
-          TO="${{ steps.parse.outputs.to }}"
-          NOTES="$(gh release view "$TO" --repo kubernetes-sigs/kubebuilder --notes || true)"
-          URL="$(gh release view "$TO" --repo kubernetes-sigs/kubebuilder --json url --jq .url || true)"
-          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$NOTES" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-
-      - name: Simulate merge with main
-        id: simulate
-        run: |
-          git fetch origin +refs/heads/main:refs/remotes/origin/main
-          git checkout -B _merge_try origin/main
-          git config --local merge.conflictStyle diff3
-          git config --local rerere.enabled true
-          if git merge --no-commit --no-ff "${{ github.event.pull_request.head.sha }}"; then
-            echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          else
-            echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
+          FROM="$(sed -nE 's/.*[Ff]rom[[:space:]]+(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' <<< "$TITLE" | head -n1)"
+          TO="$(sed -nE 's/.*[Tt]o[[:space:]]+(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/p'   <<< "$TITLE" | head -n1)"
+          if [[ -z "$FROM" || -z "$TO" ]]; then
+            FROM="$(sed -nE 's/.*(v[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*->.*/\1/p' <<< "$TITLE" | head -n1)"
+            TO="$(sed -nE 's/.*->[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/p'   <<< "$TITLE" | head -n1)"
           fi
-          git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' || true > conflict_markers.txt
-          awk -F: '{print $1}' conflict_markers.txt | sort -u > conflict_files.txt || true
+          echo "from=$FROM" >> "$GITHUB_OUTPUT"
+          echo "to=$TO"     >> "$GITHUB_OUTPUT"
 
-      - name: Summarize with AI
-        if: always()
+      - name: Get Kubebuilder release notes URL (TO)
+        id: rel
+        shell: bash
         run: |
-          HAS_CONFLICTS="${{ steps.simulate.outputs.has_conflicts }}"
           TO="${{ steps.parse.outputs.to }}"
+          if [[ -z "$TO" ]]; then
+            echo "url=https://github.com/kubernetes-sigs/kubebuilder/releases" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          URL="$(gh release view "$TO" --repo kubernetes-sigs/kubebuilder --json url --jq .url || true)"
+          echo "url=${URL:-https://github.com/kubernetes-sigs/kubebuilder/releases/tag/$TO}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract conflicted files from PR diff
+        id: conflicts
+        shell: bash
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} --unified=0 --patch > pr.patch
+          # list files that contain conflict markers in the diff
+          awk '/^\+\+\+ b\//{file=substr($0,7)} /^(<<<<<<<|=======|>>>>>>>)/{print file}' pr.patch \
+            | sed '/^$/d' | sort -u > conflict_files.txt || true
+          echo "count=$(wc -l < conflict_files.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure prompt file exists
+        shell: bash
+        run: |
+          test -s .github/workflows/prompt.txt || { echo "prompt.txt missing"; exit 1; }
+          echo "Using prompt at .github/workflows/prompt.txt"
+          # Optional: show first lines for debugging
+          head -n 5 .github/workflows/prompt.txt || true
+
+      - name: Comment per conflicted file (AI)
+        if: steps.conflicts.outputs.count != '0'
+        shell: bash
+        run: |
           REL_URL="${{ steps.rel.outputs.url }}"
+          FROM="${{ steps.parse.outputs.from }}"
+          TO="${{ steps.parse.outputs.to }}"
+          MODEL="${MODEL:-openai/gpt-4o-mini}"
 
-          GEN_RE='(api/.*/zz_generated\..*|config/crd/bases/.*\.ya?ml|.*/bindata\.go)'
-          GEN_FILES="$(grep -E "$GEN_RE" conflict_files.txt || true)"
-          SRC_FILES="$(grep -Ev "$GEN_RE" conflict_files.txt || true)"
+          # helper to grab a tiny hunk around markers for a given file
+          hunk_for() {
+            local f="$1"
+            awk -v want="+++ b/$f" '
+              $0 ~ /^\+\+\+ b\// { inFile = ($0==want) }
+              inFile { print }
+            ' pr.patch \
+            | awk '
+                /^(<<<<<<<|=======|>>>>>>>)/ { for(i=-6;i<=6;i++) buf[NR+i]=1 }
+                { lines[NR]=$0 }
+                END { for (i in buf) if (i in lines) print lines[i] }
+              '
+          }
 
-          STATUS=$([ "$HAS_CONFLICTS" = "true" ] && echo "❌ Conflicts detected" || echo "✅ No conflicts")
+          while read -r FILE; do
+            [[ -z "$FILE" ]] && continue
 
-          {
-            echo "PROJECT: Kubebuilder controller project"
-            echo "$STATUS for PR #${{ github.event.pull_request.number }}"
-            echo
-            echo "Upgrade: from ${{ steps.parse.outputs.from }} to $TO"
-            echo
-            echo "-- Conflicted (SOURCE) --"
-            echo "${SRC_FILES:-<none>}"
-            echo
-            echo "-- Conflicted (GENERATED) --"
-            echo "${GEN_FILES:-<none>}"
-            echo
-            echo "-- Release Notes ($TO) --"
-            echo "See: $REL_URL"
-            echo
-            echo "${{ steps.rel.outputs.notes }}"
-          } > ctx.txt
+            {
+              echo "FROM: ${FROM:-unknown}"
+              echo "TO:   ${TO:-unknown}"
+              echo "REL_URL: ${REL_URL:-https://github.com/kubernetes-sigs/kubebuilder/releases}"
+              echo "FILE: $FILE"
+              echo
+              echo "DIFF HUNK (truncated around conflict markers):"
+              hunk_for "$FILE" | sed 's/^/    /'
+            } > ctx.txt
 
-          REVIEW="$(gh models run openai/gpt-4o-mini \
-            "You are a senior Go/K8s engineer. Using the stdin context, write a concise PR review comment:
-             - For each conflicted file:
-               * If [GENERATED] (zz_generated, config/crd/bases): say 'solve by running make generate' or 'fix types then make manifests'.
-               * Add 'validate with make install' tip if CRDs/webhooks changed.
-               * Do NOT suggest hand-editing generated code.
-             - For [SOURCE]: give keep/edit/remove guidance.
-             - End with exact command sequence (make manifests generate fmt vet lint-fix).
-             - Mention risky changes if visible in release notes.
-             - Always close with: 'To know more about this change see the release notes: <link>'. \
-             Keep style like golangci-bot (bullet points, short sentences)." < ctx.txt)"
+            # Use the repo prompt
+            gh models run "$MODEL" -F .github/workflows/prompt.txt < ctx.txt > comment.md || {
+              printf ':robot: AI-generated (may contain mistakes).\n- Failed to generate guidance for `%s`.\n' "$FILE" > comment.md
+            }
 
-          echo "$REVIEW" > review.md
-          gh pr review ${{ github.event.pull_request.number }} --comment -F review.md
+            {
+              echo "**File:** \`$FILE\`"
+              echo
+              cat comment.md
+            } > body.md
 
-      - name: Fail if conflicts
-        if: steps.simulate.outputs.has_conflicts == 'true'
-        run: exit 1
+            gh pr comment ${{ github.event.pull_request.number }} --body-file body.md
+            echo "Commented on $FILE"
+          done < conflict_files.txt
+
+      - name: Post all-clear comment when no conflicts
+        if: steps.conflicts.outputs.count == '0'
+        shell: bash
+        run: |
+          REL_URL="${{ steps.rel.outputs.url }}"
+          cat > body.md <<EOF
+:robot: AI-generated (may contain mistakes).
+  - No conflict markers detected in this PR diff.
+  - Please still run all Makefile targets to ensure generated assets are updated:
+    \`make manifests generate fmt vet lint-fix\`
+  - To know more about this change see the release notes: ${REL_URL:-https://github.com/kubernetes-sigs/kubebuilder/releases}
+  EOF
+  gh pr comment ${{ github.event.pull_request.number }} --body-file body.md
