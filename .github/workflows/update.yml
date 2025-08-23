@@ -59,7 +59,6 @@ jobs:
             --force \
             --restore-path .github/workflows \
             --push \
-            --output-branch kubebuilder-update-pr-model \
             --from-version v4.5.2 \
             --use-gh-models \
             --open-gh-issue
