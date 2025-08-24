@@ -36,7 +36,7 @@ These are repository-wide instructions for a **Kubebuilder-style Kubernetes Oper
 - `api/**/zz_generated.*.go`
 - `config/crd/bases/*.yaml`
 - `config/rbac/*.yaml`
-  All other files are considered **source**.
+All other files are considered **source**.
 
 ---
 
