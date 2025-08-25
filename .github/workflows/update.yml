@@ -38,7 +38,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/kubernetes-sigs/kubebuilder.git /tmp/kubebuilder
           cd /tmp/kubebuilder
-          gh pr checkout 5049 --repo kubernetes-sigs/kubebuilder
+          gh pr checkout 5050 --repo kubernetes-sigs/kubebuilder
           make build
           sudo cp bin/kubebuilder /usr/local/bin/
           kubebuilder version
